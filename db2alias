@@ -16,7 +16,7 @@
 BASE_PATH=/etc ;        #$(cd `dirname ${0}`; pwd)
 CACHE_FILE=/tmp/db2alias.`hostname`.`whoami`.cache ;
 CACHE_FILE_TMP=${CACHE_FILE}.tmp ;
-echo '#!/bin/bash' > ${CACHE_FILE_TMP} && cat ${CACHE_FILE} |awk -F'|' '{print $1}' >> ${CACHE_FILE_TMP}  && source ${CACHE_FILE_TMP} && rm -f  ${CACHE_FILE_TMP} ;
+cat ${CACHE_FILE} |awk -F'|' '{print $1}' > ${CACHE_FILE_TMP}  && source ${CACHE_FILE_TMP} && rm -f  ${CACHE_FILE_TMP} ;
 DFT_DB2HOME_LIST=(      #DB2的安装位置(当找不到db2ls时到此列表find)
     '/opt/ibm/db2/' 
     '/usr/ibm/db2/'
@@ -54,16 +54,22 @@ else
     echo "db2ls env not found!"; 
 fi;
 
-function db2alias(){
-    cat /etc/db2alias|grep 'function '|grep -v grep | while read line
+function DB2Aalias(){
+    cat /etc/db2alias|grep '^function '|grep -v grep | while read line
     do 
         echo $line | awk -F'(' '{print $1}' | awk -F' ' '{print $NF}';
     done ;
+    cat /etc/db2alias|grep '^alias '|grep -v grep | while read line
+    do 
+        echo $line | awk -F'=' '{print $1}' | awk -F' ' '{print $NF}';
+    done ;
 }
+alias db2alias="DB2Aalias|sort" ;
 
 function ReloadDB2Alias() {   
     echo 'Loading..';
     >${CACHE_FILE} ;
+    SelectDefaultDB;
     [[ -f ${BASE_PATH}/db2alias ]] && source ${BASE_PATH}/db2alias;
 }
 
@@ -78,7 +84,7 @@ function SaveVal(){
     [[ ! -f ${CACHE_FILE} ]] &&  touch ${CACHE_FILE} ;
     key=${1} ;
     values=${2} ;
-    interval_sec=${3-120}; #default > 120 sec,update
+    interval_sec=${3-1}; #default > 1 sec,update
     data="${key}=${values}" ;
     cur_time=`GetCurrTimestamp` ;
     text="${data}|${cur_time}" ;
@@ -101,6 +107,7 @@ function SysConfirm(){
     
     select var in ${YANDN[@]}
     do
+        [[ ${var} == "" ]] && continue ;
         if [[ $var == "N" ]] ; then 
             false || return;
         fi;
@@ -124,7 +131,7 @@ function TestPortActive(){
 }
 
 
-function db2s(){
+function DB2S(){
     ARGS=`getopt -o pi:h:: --long prompt,instance:,help:: -n 'db2s' -- "$@"` ;
     [ $? != 0 ] && return ;
     eval set -- "${ARGS}" ;
@@ -167,6 +174,7 @@ function db2s(){
                 PS3="Please select an instance:";
                 select var in ${inst_arr[@]}
                 do
+                    [[ ${var} == "" ]] && continue ;
                     id ${var} 1>&2 &> /dev/null  && su - ${var} || echo "instance ${var} not found!" ;
                     return;
                 done ;
@@ -177,6 +185,7 @@ function db2s(){
                 return;
                 ;;
             -h|--help)
+                #USAGE;
                 echo "db2s [-p|--prompt] [-i|--instance <instname>] [-h|--help]";
                 return;
                 ;;
@@ -196,40 +205,186 @@ function db2s(){
     done ;
     [[ -f ${CACHE_FILE_TMP}.3 ]] && rm -f ${CACHE_FILE_TMP}.3 ;
 }
+alias db2s="DB2S";
+
+if ! which db2 1>&2 &> /dev/null ; then
+    return;
+fi
 
 
-if which db2 1>&2 &> /dev/null ; then
-    if [[ ! ${DFT_DBNAME} || ${DFT_DBNAME} == "" ]] ; then
-        DFT_DBNAME=($`db2 list db directory  |egrep "Database name.*=" |sort|uniq|awk -F'=' '{gsub(/^[ \t]+/,"",$2); print $2}'` );
+function SelectDefaultDB(){
+    DBNAME_LIST=(`db2 list db directory  |egrep "Database name.*=" |sort|uniq|awk -F'=' '{gsub(/^[ \t]+/,"",$2); print $2}'` );
         
-        if (( ${#DFT_DBNAME[@]} > 1 )); then 
-            DBNAME_LIST=${DFT_DBNAME};
-            DBNANE_LIST_SRT="";
-            for db in ${DBNAME_LIST[@]}
-            do
-                DBNAME_LIST_STR="${DBNAME_LIST_STR},${db}";
-            done;
-            SaveVal DBNAME_LIST ${DBNAME_LIST_STR}
-        fi ;
-        
-        PS3="Please select an database:";
-        select var in ${DBNANE_LIST_SRT[@]}
+    if (( ${#DBNAME_LIST[@]} > 1 )); then 
+        DBNANE_LIST_SRT="";
+        for db in ${DBNAME_LIST[@]}
         do
+            DBNAME_LIST_STR="${DBNAME_LIST_STR},${db}";
+        done;
+        SaveVal DBNAME_LIST ${DBNAME_LIST_STR:1} ;
+        PS3="Please select an default database:";
+        select var in ${DBNAME_LIST[@]}
+        do
+            [[ ${var} == "" ]] && continue ;
             DFT_DBNAME=${var};
             break;
         done ;
-        [[ ${DFT_DBNAME} != "" ]] && SaveVal DFT_DBNAME ${DFT_DBNAME} ;
-    fi;
-else
-    return;
+    else
+        DFT_DBNAME=${DBNAME_LIST};
+    fi ;
+    [[ ${DFT_DBNAME} != "" ]] && SaveVal DFT_DBNAME ${DFT_DBNAME} ;
+}
+
+
+
+if [[ ! ${DFT_DBNAME} || ${DFT_DBNAME} == "" ]] ; then
+    SelectDefaultDB;
 fi;
+
+
+#############################################################################
+#list info
 
 function ListDB(){
     db2 list database directory;
 }
+alias listdb="ListDB";
+
+function ConnDB(){
+    db2 connect to ${DFT_DBNAME} $@;    
+}
+alias conndb="ConnDB";
+alias condb="conndb";
+
+function DB2TopX(){
+    db2top -d ${DFT_DBNAME} $@;    
+}
+alias db2topx="DB2TopX" ;
+
+function DB2LookX(){
+    db2look -d ${DFT_DBNAME} $@;    
+}
+alias db2lookx="DB2LookX";
+
+function DB2PdX(){
+    db2pd -d ${DFT_DBNAME} $@;
+}
+alias db2pdx="DB2PdX";
+
+function ListApp(){
+    db2 list applications $@;    
+}
+alias listapp="ListApp" ;
+
+function ListUtil(){
+    db2 list utilities $@;    
+}
+alias listutil="ListUtil";
+
+function ListUtilX(){
+    ListUtil show detail;    
+}
+alias listutilx="ListUtilX";
+
+function ListTables(){
+    db2 list tables $@;    
+}
+alias listtab="ListTables";
+
+function ListPkg(){
+    db2 list packages $@;
+}
+alias listpkg="ListPkg";
+
+#############################################################################
+#set current 
+function SetSchema(){
+    [[ $1 == "" ]] && echo 'schema name is null!' && return ;
+    db2 -v set current schema $1 ;
+}
+
+#############################################################################
+#tools
+alias db2explnx="db2expln -database ${DFT_DBNAME} -g -i -t "
+function DB2ExplnS(){
+    ARGS=`getopt -o s:q: --long schema:,statement: -n '$0' -- "$@"`
+    [ $? != 0 ] && return ;
+    eval set -- "${ARGS}" ;
+    schema="";
+    while true
+    do
+        case "$1" in
+            -s|--schema)
+                schema=$2;
+                echo "schema:"$schema;
+                shift ;
+                ;;
+            -q|--statement)
+                statement=$2;
+                echo "statement:"$statement;
+                shift ;
+                ;;
+            --)
+                shift ;
+                break ;
+                ;;
+            *)
+                shift;
+                ;;
+        esac;
+    done;
+    [[ ${schema} != "" ]] && echo "set schema ${schema}" > ${CACHE_FILE_TMP} ; 
+    echo ${statement} >> ${CACHE_FILE_TMP}
+    #db2expln -database ${DFT_DBNAME} -g -i -stmtfile ${CACHE_FILE_TMP} -t;
+    db2explnx -stmtfile ${CACHE_FILE_TMP}
+    [[ -f ${CACHE_FILE_TMP} ]] && rm -f ${CACHE_FILE_TMP} ;
+}
+alias myexplnq="DB2ExplnS";
+
+function DB2ExplnP(){
+    ARGS=`getopt -o s:p:n: --long schema:,package:,section: -n '$0' -- "$@"`
+    [ $? != 0 ] && return ;
+    eval set -- "${ARGS}" ;
+    while true
+    do
+        case "$1" in
+            -s|--schema)
+                schema=$2;
+                echo "schema:"$schema;
+                shift ;
+                ;;
+            -p|--package)
+                package=$2;
+                echo "package:"$package;
+                shift ;
+                ;;
+            -n|--section)
+                section=$2;
+                echo "package:"$section;
+                shift ;
+                ;;
+            --)
+                shift ;
+                break ;
+                ;;
+            *)
+                shift;
+                ;;
+        esac;
+    done;
+    #[[ ${schema} != "" ]] && echo "set schema ${schema}" > ${CACHE_FILE_TMP} ; 
+    #echo ${statement} >> ${CACHE_FILE_TMP}
+    #db2expln -database ${DFT_DBNAME} -g -i -stmtfile ${CACHE_FILE_TMP} -t;
+    #[[ -f ${CACHE_FILE_TMP} ]] && rm -f ${CACHE_FILE_TMP} ;
+    db2explnx -p ${package} -schema ${schema} -section ${section}
+}
+alias myexplnp="DB2ExplnP";
+
+#############################################################################
 
 function CreateDB2Instance(){
-    echo test
+    [[ `whoami` != 'root' ]] && echo 'only root user!' && return ;
+    echo
 }
 
 function DB2SetStandard() {
@@ -252,7 +407,6 @@ function DB2SetStandard() {
         db2set DB2RSHCMD=SSH
         db2set DB2_RESTRICT_DDF=TRUE
     ";
-    #echo "Are you sure to apply the following standard configuration to the current instance(Y/N)?";
     SysConfirm "Are you sure to apply the following standard configuration to the current instance(Y/N)?";
     [[ $? == "1" ]] && return ;
     
@@ -273,5 +427,3 @@ function DB2SetStandard() {
     db2set -all;
     echo "Done!";
 }
-
-#[[ ${CACHE_FILE_TMP} != "" ]] && [[ -f ${CACHE_FILE_TMP} ]] && rm -f ${CACHE_FILE_TMP} ; #finally
