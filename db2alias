@@ -1,0 +1,277 @@
+#!/bin/bash 
+#############################################################################
+#
+#author      : 黄柱星 huangzhuxing@gmail.com 
+#create time : 2017-09-28 17:45
+#
+#############################################################################
+#
+# NAME: db2alias
+#
+# FUNCTION: db2alias - print all command
+#
+#############################################################################
+
+[[ -f ~/sqllib/db2profile ]] && source ~/sqllib/db2profile ;
+BASE_PATH=/etc ;        #$(cd `dirname ${0}`; pwd)
+CACHE_FILE=/tmp/db2alias.`hostname`.`whoami`.cache ;
+CACHE_FILE_TMP=${CACHE_FILE}.tmp ;
+echo '#!/bin/bash' > ${CACHE_FILE_TMP} && cat ${CACHE_FILE} |awk -F'|' '{print $1}' >> ${CACHE_FILE_TMP}  && source ${CACHE_FILE_TMP} && rm -f  ${CACHE_FILE_TMP} ;
+DFT_DB2HOME_LIST=(      #DB2的安装位置(当找不到db2ls时到此列表find)
+    '/opt/ibm/db2/' 
+    '/usr/ibm/db2/'
+);
+OSTYPE=`uname`;         #OS类型
+
+#################定义颜色的变量#################
+RED_COLOR='\E[1;31m';   #红
+GREEN_COLOR='\E[1;32m'; #绿
+YELOW_COLOR='\E[1;33m'; #黄
+BLUE_COLOR='\E[1;34m';  #蓝
+PINK='\E[1;35m';        #粉红
+RES='\E[0m';            #重置
+#################定义颜色的变量#################
+function ColorFont(){
+    #30:黑色字 
+    #31:红色字 
+    #32:绿色字 
+    #33:黄色字 
+    #34:蓝色字 
+    #35:紫色字 
+    #36:天蓝字 
+    #37:白色字
+    text=${1} ;
+    color=${2-${RED_COLOR}} ;
+    echo -n "${color}${text}${RES}" ;
+}
+
+if which db2ls 1>&2 &> /dev/null ; then 
+    echo -e `ColorFont 'db2alias ready!' ${GREEN_COLOR}` ; 
+else
+    for db2home in ${DFT_DB2HOME_LIST[@]}; do
+        echo ${db2home} ;
+    done; 
+    echo "db2ls env not found!"; 
+fi;
+
+function db2alias(){
+    cat /etc/db2alias|grep 'function '|grep -v grep | while read line
+    do 
+        echo $line | awk -F'(' '{print $1}' | awk -F' ' '{print $NF}';
+    done ;
+}
+
+function ReloadDB2Alias() {   
+    echo 'Loading..';
+    >${CACHE_FILE} ;
+    [[ -f ${BASE_PATH}/db2alias ]] && source ${BASE_PATH}/db2alias;
+}
+
+function GetCurrTimestamp(){
+    fmt=${1-"%Y-%m-%d %H:%M:%S"} ;
+    date "+${fmt}" ;
+}
+
+function SaveVal(){
+    #cache format : keyname=values|create_or_update timstamp(date "+%Y-%m-%d %H:%M:%S")
+    [[ ${1} == "" || ${2} == "" ]] && return ;
+    [[ ! -f ${CACHE_FILE} ]] &&  touch ${CACHE_FILE} ;
+    key=${1} ;
+    values=${2} ;
+    interval_sec=${3-120}; #default > 120 sec,update
+    data="${key}=${values}" ;
+    cur_time=`GetCurrTimestamp` ;
+    text="${data}|${cur_time}" ;
+    line=`grep "^${key}=" ${CACHE_FILE}` ;
+    if [[ ${line} != "" ]]; then 
+        cutime=`echo ${line}|awk -F"|" '{print $2}'` ;
+        first_stamp=`date -d "${cutime}" +%s` ;
+        cur_stamp=`date -d "${cur_time}" +%s` ;
+        if (( $(( ${cur_stamp} - ${first_stamp} )) > ${interval_sec} )) ; then 
+            sed -i "s/${line}/${text}/g" ${CACHE_FILE};
+        fi;
+    else
+        echo ${text} >> ${CACHE_FILE} ;
+    fi;
+}
+
+function SysConfirm(){
+    PS3=${1-"Are you sure to continue(Y/N)?"}
+    YANDN=("Y" "N");
+    
+    select var in ${YANDN[@]}
+    do
+        if [[ $var == "N" ]] ; then 
+            false || return;
+        fi;
+        [[ $var == "Y" ]] && true && return;
+    done ;
+}
+
+
+
+function TestPortActive(){
+    SERVER=localhost ;
+    PORT=${1-50001} ;
+    </dev/tcp/$SERVER/$PORT ;
+    if [ "$?" -ne 0 ] ; then 
+        false;
+        return 1;
+    else
+        true;
+        return 0;
+    fi;
+}
+
+
+function db2s(){
+    ARGS=`getopt -o pi:h:: --long prompt,instance:,help:: -n 'db2s' -- "$@"` ;
+    [ $? != 0 ] && return ;
+    eval set -- "${ARGS}" ;
+    > ${CACHE_FILE_TMP}.3;
+    inst_arr=();
+    inst_index=0;
+    db2ls |awk 'NR>3' > ${CACHE_FILE_TMP}.1 ;
+    while read line
+    do
+        db2_install_path=$(echo ${line}|awk '{print $1}') ;
+        db2_install_path_ver=$(echo ${line}|awk '{print $2}') ;
+        echo -e `ColorFont "install path(version):${db2_install_path}(${db2_install_path_ver})" ${YELOW_COLOR}`  >> ${CACHE_FILE_TMP}.3;
+        ${db2_install_path}/instance/db2ilist > ${CACHE_FILE_TMP}.2 ;
+        while read inst
+        do
+            service_port=`grep DB2c${inst} /etc/services|tail -1 |awk '{print $2}'` ;
+            TestPortActive ${service_port%/*} 1>&2 &> /dev/null ;
+            status=`[[ $? == "0" ]] && echo "Listen" || echo "Stop"` ;
+            if [[ ${status} == "Listen" ]]; then
+                conn_num=`netstat -na|egrep ':50001.*ESTABLISHED' |wc -l` ;
+                echo -e "INSTANCE:`ColorFont ${inst} ${GREEN_COLOR}` PORT:`ColorFont ${service_port} ${GREEN_COLOR}` STATUS:`ColorFont \"${status}(${conn_num})\" ${GREEN_COLOR}`" >> ${CACHE_FILE_TMP}.3;
+            else
+                echo -e "INSTANCE:`ColorFont ${inst}` PORT:`ColorFont ${service_port}` STATUS:`ColorFont ${status}`" >> ${CACHE_FILE_TMP}.3;
+            fi;
+            inst_index=$[ inst_index + 1 ];
+            inst_arr[${inst_index}]=${inst};
+            
+        done <${CACHE_FILE_TMP}.2 ;
+    done<${CACHE_FILE_TMP}.1 ; 
+    
+    [[ -f ${CACHE_FILE_TMP}.1 ]] && rm -f ${CACHE_FILE_TMP}.1 ;
+    [[ -f ${CACHE_FILE_TMP}.2 ]] && rm -f ${CACHE_FILE_TMP}.2 ;
+    
+    [[ `whoami` != "root" ]] && return ;
+    
+    while true
+    do
+        case "$1" in
+            -p|--prompt) 
+                PS3="Please select an instance:";
+                select var in ${inst_arr[@]}
+                do
+                    id ${var} 1>&2 &> /dev/null  && su - ${var} || echo "instance ${var} not found!" ;
+                    return;
+                done ;
+                break;
+                ;;
+            -i|--instance)
+                id $2 1>&2 &> /dev/null  && su - $2 || echo "instance $2 not found!" ;
+                return;
+                ;;
+            -h|--help)
+                echo "db2s [-p|--prompt] [-i|--instance <instname>] [-h|--help]";
+                return;
+                ;;
+            --)
+                shift ;
+                break ;
+                ;;
+            *)
+                echo "Internal error!"
+                return;
+                ;;
+        esac;
+    done;
+    cat ${CACHE_FILE_TMP}.3 | while read line 
+    do 
+        echo -e ${line}; 
+    done ;
+    [[ -f ${CACHE_FILE_TMP}.3 ]] && rm -f ${CACHE_FILE_TMP}.3 ;
+}
+
+
+if which db2 1>&2 &> /dev/null ; then
+    if [[ ! ${DFT_DBNAME} || ${DFT_DBNAME} == "" ]] ; then
+        DFT_DBNAME=($`db2 list db directory  |egrep "Database name.*=" |sort|uniq|awk -F'=' '{gsub(/^[ \t]+/,"",$2); print $2}'` );
+        
+        if (( ${#DFT_DBNAME[@]} > 1 )); then 
+            DBNAME_LIST=${DFT_DBNAME};
+            DBNANE_LIST_SRT="";
+            for db in ${DBNAME_LIST[@]}
+            do
+                DBNAME_LIST_STR="${DBNAME_LIST_STR},${db}";
+            done;
+            SaveVal DBNAME_LIST ${DBNAME_LIST_STR}
+        fi ;
+        
+        PS3="Please select an database:";
+        select var in ${DBNANE_LIST_SRT[@]}
+        do
+            DFT_DBNAME=${var};
+            break;
+        done ;
+        [[ ${DFT_DBNAME} != "" ]] && SaveVal DFT_DBNAME ${DFT_DBNAME} ;
+    fi;
+else
+    return;
+fi;
+
+function ListDB(){
+    db2 list database directory;
+}
+
+function CreateDB2Instance(){
+    echo test
+}
+
+function DB2SetStandard() {
+    if ! which db2set 1>&2 &> /dev/null ; then 
+        echo "not instance user!";
+        return;
+    fi ;
+    echo "
+        db2set DB2COUNTRY=86
+        db2set DB2TERRITORY=86
+        db2set DB2CODEPAGE=1208
+        db2set DB2_LOAD_COPY_NO_OVERRIDE=NONRECOVERABLE
+        db2set DB2COMM=TCPIP
+        db2set DB2_LOGGER_NON_BUFFERED_IO=ON
+        db2set DB2_MDC_ROLLOUT=DEFER
+        db2set DB2_TRUST_MDC_BLOCK_FULL_HINT=YES
+        db2set DB2SORCVBUF=1048576
+        db2set DB2SOSNDBUF=1048576
+        db2set DB2_MAX_GLOBAL_SNAPSHOT_SIZE=20971520
+        db2set DB2RSHCMD=SSH
+        db2set DB2_RESTRICT_DDF=TRUE
+    ";
+    #echo "Are you sure to apply the following standard configuration to the current instance(Y/N)?";
+    SysConfirm "Are you sure to apply the following standard configuration to the current instance(Y/N)?";
+    [[ $? == "1" ]] && return ;
+    
+    db2set DB2COUNTRY=86
+    db2set DB2TERRITORY=86
+    db2set DB2CODEPAGE=1208
+    db2set DB2_LOAD_COPY_NO_OVERRIDE=NONRECOVERABLE
+    db2set DB2COMM=TCPIP
+    db2set DB2_LOGGER_NON_BUFFERED_IO=ON
+    db2set DB2_MDC_ROLLOUT=DEFER
+    db2set DB2_TRUST_MDC_BLOCK_FULL_HINT=YES
+    db2set DB2SORCVBUF=1048576
+    db2set DB2SOSNDBUF=1048576
+    db2set DB2_MAX_GLOBAL_SNAPSHOT_SIZE=20971520
+    db2set DB2RSHCMD=SSH
+    db2set DB2_RESTRICT_DDF=TRUE
+    
+    db2set -all;
+    echo "Done!";
+}
+
+#[[ ${CACHE_FILE_TMP} != "" ]] && [[ -f ${CACHE_FILE_TMP} ]] && rm -f ${CACHE_FILE_TMP} ; #finally
