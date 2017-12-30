@@ -3,7 +3,7 @@
 #
 #author      : 黄柱星 huangzhuxing@gmail.com 
 #create time : 2017-09-28 17:45
-#
+#version     : 0.1
 #############################################################################
 #
 # NAME: db2alias
@@ -12,16 +12,19 @@
 #
 #############################################################################
 
-[[ -f ~/sqllib/db2profile ]] && source ~/sqllib/db2profile ;
+OSTYPE=`uname`;         #OS类型
+HOSTNAME=`hostname`;    #主机名
+WHOAMI=`whoami`;        #当前用户
+INSTANCE=`whoami`;      #当前实例用户
+
+[[ -f ~/sqllib/db2profile ]] && . ~/sqllib/db2profile ;
 BASE_PATH=/etc ;        #$(cd `dirname ${0}`; pwd)
 CACHE_FILE=/tmp/db2alias.`hostname`.`whoami`.cache ;
 CACHE_FILE_TMP=${CACHE_FILE}.tmp ;
-cat ${CACHE_FILE} |awk -F'|' '{print $1}' > ${CACHE_FILE_TMP}  && source ${CACHE_FILE_TMP} && rm -f  ${CACHE_FILE_TMP} ;
-DFT_DB2HOME_LIST=(      #DB2的安装位置(当找不到db2ls时到此列表find)
-    '/opt/ibm/db2/' 
-    '/usr/ibm/db2/'
+[[ -f ${CACHE_FILE} ]] && cat ${CACHE_FILE} |awk -F'|' '{print $1}' > ${CACHE_FILE_TMP}  && . ${CACHE_FILE_TMP} && rm -f  ${CACHE_FILE_TMP} ;
+DFT_DB2HOME_LIST=(      #DB2的安装位置(当找不到db2ls时到此列表中路径find)
+    '/usr/local/bin/'
 );
-OSTYPE=`uname`;         #OS类型
 
 #################定义颜色的变量#################
 RED_COLOR='\E[1;31m';   #红
@@ -45,6 +48,36 @@ function ColorFont(){
     echo -n "${color}${text}${RES}" ;
 }
 
+function PrintTitle(){
+    total_len=80;
+    title_len=${#1};
+    belife_len=$(( (total_len - 2 - title_len)/2 )) 
+    #printf "%.s#" {1..${total_len}} && echo;
+    for (( i=1;i<=${total_len};i++ )) do echo -n '#' ; done && echo;
+    echo -n '#'  && for (( i=1;i<=${belife_len};i++ )) do echo -n ' ' ; done && echo -n ${1} && for (( i=1;i<=${belife_len};i++ )) do echo -n ' ' ; done ;
+    (( belife_len * 2 + 2 + title_len < total_len ))  && echo ' #' ||  echo '#' ; 
+    for (( i=1;i<=${total_len};i++ )) do echo -n '#' ; done && echo;
+}
+
+#ServerList=("Centos7Bases")
+#function Server(){
+#        
+#}
+
+function __init__(){
+    
+    ARGS=`getopt -o u::l::v::h:: --long upgrade::,load::,version::,help:: -n 'db2alias' -- "$@"`;
+    [ $? != 0 ] && return ;
+    eval set -- "${ARGS}" ;
+    while true
+    do  
+        [[ $1 != "" ]] &&  echo $1 && shift || break ;
+    done ;
+}
+
+#__init__ $@ ;
+
+
 if which db2ls 1>&2 &> /dev/null ; then 
     echo -e `ColorFont 'db2alias ready!' ${GREEN_COLOR}` ; 
 else
@@ -54,7 +87,7 @@ else
     echo "db2ls env not found!"; 
 fi;
 
-function DB2Aalias(){
+function DB2Alias(){
     cat /etc/db2alias|grep '^function '|grep -v grep | while read line
     do 
         echo $line | awk -F'(' '{print $1}' | awk -F' ' '{print $NF}';
@@ -64,13 +97,13 @@ function DB2Aalias(){
         echo $line | awk -F'=' '{print $1}' | awk -F' ' '{print $NF}';
     done ;
 }
-alias db2alias="DB2Aalias|sort" ;
+alias db2alias="DB2Alias|sort" ;
 
 function ReloadDB2Alias() {   
     echo 'Loading..';
     >${CACHE_FILE} ;
     SelectDefaultDB;
-    [[ -f ${BASE_PATH}/db2alias ]] && source ${BASE_PATH}/db2alias;
+    [[ -f ${BASE_PATH}/db2alias ]] && . ${BASE_PATH}/db2alias;
 }
 
 function GetCurrTimestamp(){
@@ -78,7 +111,7 @@ function GetCurrTimestamp(){
     date "+${fmt}" ;
 }
 
-function SaveVal(){
+function SetVal(){
     #cache format : keyname=values|create_or_update timstamp(date "+%Y-%m-%d %H:%M:%S")
     [[ ${1} == "" || ${2} == "" ]] && return ;
     [[ ! -f ${CACHE_FILE} ]] &&  touch ${CACHE_FILE} ;
@@ -101,6 +134,16 @@ function SaveVal(){
     fi;
 }
 
+function GetVal(){
+    [[ ${1} == "" ]] && return ;
+    [[ ! -f ${CACHE_FILE} ]] &&  return ;
+    key=${1} ;
+    line=`grep "^${key}=" ${CACHE_FILE}` ;
+    if [[ ${line} != "" ]]; then 
+        echo ${line}|awk -F"|" '{print $1}' |awk -F"=" '{print $2}';
+    fi;
+}
+
 function SysConfirm(){
     PS3=${1-"Are you sure to continue(Y/N)?"}
     YANDN=("Y" "N");
@@ -114,8 +157,6 @@ function SysConfirm(){
         [[ $var == "Y" ]] && true && return;
     done ;
 }
-
-
 
 function TestPortActive(){
     SERVER=localhost ;
@@ -147,11 +188,15 @@ function DB2S(){
         ${db2_install_path}/instance/db2ilist > ${CACHE_FILE_TMP}.2 ;
         while read inst
         do
-            service_port=`grep DB2c${inst} /etc/services|tail -1 |awk '{print $2}'` ;
+            service_port=`GetVal SERVICE_PORT` ;
+            if [[ ${service_port} == "" ]] ; then
+                service_port=`grep DB2c${inst} /etc/services|tail -1 |awk '{print $2}'` ;
+                SetVal SERVICE_PORT ${service_port%/*} ;
+            fi;
             TestPortActive ${service_port%/*} 1>&2 &> /dev/null ;
             status=`[[ $? == "0" ]] && echo "Listen" || echo "Stop"` ;
             if [[ ${status} == "Listen" ]]; then
-                conn_num=`netstat -na|egrep ':50001.*ESTABLISHED' |wc -l` ;
+                conn_num=`netstat -na|egrep ':${service_port%/*}.*ESTABLISHED' |wc -l` ;
                 echo -e "INSTANCE:`ColorFont ${inst} ${GREEN_COLOR}` PORT:`ColorFont ${service_port} ${GREEN_COLOR}` STATUS:`ColorFont \"${status}(${conn_num})\" ${GREEN_COLOR}`" >> ${CACHE_FILE_TMP}.3;
             else
                 echo -e "INSTANCE:`ColorFont ${inst}` PORT:`ColorFont ${service_port}` STATUS:`ColorFont ${status}`" >> ${CACHE_FILE_TMP}.3;
@@ -165,7 +210,14 @@ function DB2S(){
     [[ -f ${CACHE_FILE_TMP}.1 ]] && rm -f ${CACHE_FILE_TMP}.1 ;
     [[ -f ${CACHE_FILE_TMP}.2 ]] && rm -f ${CACHE_FILE_TMP}.2 ;
     
-    [[ `whoami` != "root" ]] && return ;
+    if [[ `whoami` != "root" ]] ; then 
+        cat ${CACHE_FILE_TMP}.3 | while read line 
+        do 
+            echo -e ${line}; 
+        done ;
+        echo
+        return ;
+    fi;
     
     while true
     do
@@ -203,6 +255,7 @@ function DB2S(){
     do 
         echo -e ${line}; 
     done ;
+    echo
     [[ -f ${CACHE_FILE_TMP}.3 ]] && rm -f ${CACHE_FILE_TMP}.3 ;
 }
 alias db2s="DB2S";
@@ -221,7 +274,7 @@ function SelectDefaultDB(){
         do
             DBNAME_LIST_STR="${DBNAME_LIST_STR},${db}";
         done;
-        SaveVal DBNAME_LIST ${DBNAME_LIST_STR:1} ;
+        SetVal DBNAME_LIST ${DBNAME_LIST_STR:1} ;
         PS3="Please select an default database:";
         select var in ${DBNAME_LIST[@]}
         do
@@ -232,7 +285,7 @@ function SelectDefaultDB(){
     else
         DFT_DBNAME=${DBNAME_LIST};
     fi ;
-    [[ ${DFT_DBNAME} != "" ]] && SaveVal DFT_DBNAME ${DFT_DBNAME} ;
+    [[ ${DFT_DBNAME} != "" ]] && SetVal DFT_DBNAME ${DFT_DBNAME} ;
 }
 
 
@@ -251,10 +304,10 @@ function ListDB(){
 alias listdb="ListDB";
 
 function ConnDB(){
-    db2 connect to ${DFT_DBNAME} $@;    
+    echo "connect to ${DFT_DBNAME} $@";
 }
-alias conndb="ConnDB";
-alias condb="conndb";
+alias conndb=" db2 \"`ConnDB $@`\"";
+alias condb=" db2 \"`ConnDB $@`\"";
 
 function DB2TopX(){
     db2top -d ${DFT_DBNAME} $@;    
@@ -272,9 +325,9 @@ function DB2PdX(){
 alias db2pdx="DB2PdX";
 
 function ListApp(){
-    db2 list applications $@;    
+    echo "list applications $@";
 }
-alias listapp="ListApp" ;
+alias listapps="db2 \"` ListApp $@ `\"" ;
 
 function ListUtil(){
     db2 list utilities $@;    
@@ -287,14 +340,161 @@ function ListUtilX(){
 alias listutilx="ListUtilX";
 
 function ListTables(){
-    db2 list tables $@;    
+    echo "list tables $@";
 }
-alias listtab="ListTables";
+alias listtabs="db2 \"`ListTables $@ `\"" ;
+
+function ListColumns(){
+    echo "select varchar(
+     trim(char(colno)) concat '.' concat trim(varchar(tabschema,64)) concat '.' concat trim(varchar(tabname,128)) concat '.' concat trim(varchar(colname,128)),80 ) as colinfo,
+     varchar(varchar(typename,25) concat '(' concat trim(char(length)) concat ',' concat trim(char(scale)) concat ')',25) as datatype,
+     varchar(case when nulls = 'Y' and numnulls > -1 then  'Y(' concat trim(char(numnulls)) concat ')' else 'N' end,10) as nullinfo ,
+     varchar(trim(char(colcard)) concat '\' concat trim(char(avgcollen)) ,18) as colcard_avgcollen
+    from syscat.columns where 1=1 
+    order by tabschema,tabname,colno 
+    ";
+}
+alias listcols="db2 \"`ListColumns $@ `\"" ;
+
 
 function ListPkg(){
-    db2 list packages $@;
+    echo "list packages $@";
 }
-alias listpkg="ListPkg";
+alias listpkg="db2 \"`ListPkg $@ `\"";
+
+function ListPkgAndRoute(){
+    echo "with t(bschema,bname,rouname) as (
+            select varchar(bschema,16),varchar(bname,20),varchar(procname,64) from SYSCAT.PROCEDURES  a join sysibm.sysdependencies b on a.SPECIFICNAME=b.DNAME where BTYPE ='K' 
+            union
+            select varchar(bschema,16),varchar(bname,20),varchar(funcname,64) from SYSCAT.FUNCTIONS  a join sysibm.sysdependencies b on a.SPECIFICNAME=b.DNAME where BTYPE ='K'
+            order by 1 
+         ) select * from t ${@}  "  #> ${CACHE_FILE_TMP} ;
+    #cat ${CACHE_FILE_TMP} && [[ -f ${CACHE_FILE_TMP} ]] && rm -f ${CACHE_FILE_TMP} ;
+}
+alias listpkgandroute="db2 \"`ListPkgAndRoute $@ `\"" ;
+
+function DBCfg(){
+    db2 get db cfg for ${DFT_DBNAME} ;     
+}
+
+function DBMCfg(){
+    db2 get dbm cfg ;     
+}
+
+function HadrStatus(){
+    db2pdx -hadr ;
+    DBCfg |grep -i hadr ;
+    egrep "hadr.*${INSTANCE}" /etc/services ;
+}
+
+function OnLineBackup(){
+    db2 -v backup database  ${DFT_DBNAME} online compress include logs 
+}
+
+function OffLineBackup(){
+    db2 backup database ${DFT_DBNAME} compress ;    
+}
+
+function SetHadrCfg(){
+    [[ ${1} == "" || ${2} == "" ]] && echo "arg error!pls input : SetHadrCfg [primary|standby] <remote_hostname|remote_ip>" && return;
+    if [[ $1 == 'primary' ]] ; then
+        inst_port=`GetVal SERVICE_PORT`
+        hadr_local_svc=$(( ${inst_port} + 1000 )); 
+        hadr_remote_svc=$(( ${inst_port} + 2000 ));
+    fi;
+    
+    if [[ $1 == 'standby'  ]]; then
+        inst_port=`GetVal SERVICE_PORT`
+        hadr_local_svc=$(( ${inst_port} + 2000 )); 
+        hadr_remote_svc=$(( ${inst_port} + 1000 ));
+    fi;
+    
+    echo "echo hadr_l_${INSTANCE} ${hadr_local_svc}/tcp >> /etc/services" ;
+    echo "echo hadr_r_${INSTANCE} ${hadr_remote_svc}/tcp >> /etc/services" ;
+    echo "db2 update db cfg for ${DFT_DBNAME} using HADR_LOCAL_HOST ${HOSTNAME} HADR_LOCAL_SVC hadr_l_${INSTANCE} HADR_REMOTE_HOST $2 HADR_REMOTE_SVC hadr_r_${INSTANCE} HADR_REMOTE_INST ${INSTANCE} LOGINDEXBUILD ON ";
+}
+
+
+function GetDBMCfg(){
+    echo "get dbm cfg $@ ";    
+}
+alias getdbmcfg="db2 \"`GetDBMCfg $@`\"";
+
+function GetDBCfg(){
+    echo "get db cfg for ${DFT_DBNAME} $@ ";    
+}
+alias getdbcfg="db2 \"`GetDBCfg $@ `\"";
+
+function GetActiveLogs(){
+    db2 "select varchar(a.DB_NAME,20) db_name,a.LOG_UTILIZATION_PERCENT, a.TOTAL_LOG_USED_KB, a.TOTAL_LOG_AVAILABLE_KB, a.TOTAL_LOG_USED_TOP_KB,a.DBPARTITIONNUM as parnum,a.MEMBER from sysibmadm.LOG_UTILIZATION a with ur  " ;
+    db2pdx -logs ;
+    
+}
+
+function GetWaitSql(){
+    echo "SELECT MEMBER,
+        NUM_EXECUTIONS,
+        STMT_EXEC_TIME,
+        decimal((TOTAL_ACT_WAIT_TIME / double(STMT_EXEC_TIME)) * 100, 5, 2) as pct_wait,
+        decimal((POOL_READ_TIME / double(STMT_EXEC_TIME)) * 100, 5, 2) as pct_read,
+        decimal((LOCK_WAIT_TIME/double(STMT_EXEC_TIME)) * 100, 5, 2) as pct_lock,
+        decimal((LOG_DISK_WAIT_TIME / double(STMT_EXEC_TIME)) * 100, 5, 2) as pct_log,
+        decimal((TOTAL_SECTION_SORT_TIME / double(STMT_EXEC_TIME)) * 100, 5, 2) as pct_sort,
+        CAST(FLOAT(STMT_EXEC_TIME)/FLOAT(NUM_EXECUTIONS) as decimal(10,3)) as AVG_EXEC_TIME,
+        substr(STMT_TEXT,1,500) AS STMT_TEXT
+        FROM TABLE(MON_GET_PKG_CACHE_STMT(NULL,NULL,NULL,-2))
+        WHERE NUM_EXECUTIONS >1 and STMT_EXEC_TIME>0 with ur " ;    
+}
+alias getwaitsql="db2 \"`GetWaitSql`\""
+
+
+function UpdateDBMCfg(){
+    db2 -v update dbm cfg using $@ ;    
+}
+
+function UpdateDBCfg(){
+    db2 -v update db cfg for ${DFT_DBNAME} using $@ ;    
+}
+
+
+function DeactivateDB(){
+    db2 deactivate database ${DFT_DBNAME} ; 
+}
+
+function ActivateDB(){
+    db2 activate  database ${DFT_DBNAME} ; 
+}
+function HadrPrimary(){
+    db2 start hadr on database ${DFT_DBNAME} as primary ;    
+}
+function HadrStandby(){
+    db2 start hadr on database ${DFT_DBNAME} as standby ;    
+}
+function HadrTakeOver(){
+    db2 takeover hadr on database ${DFT_DBNAME} $@ ;    
+}
+function HadrTakeOverByForce(){
+    HadrTakeOver by force PEER WINDOW ONLY;    
+}
+function HadrStatus(){
+    PrintTitle "db2set cfg"
+    db2set -all |grep -i hadr ;
+    
+    echo && PrintTitle "etc services cfg"
+    egrep "hadr.*${INSTANCE}" /etc/services ;
+    
+    echo && PrintTitle "db cfg"
+    db2 get db cfg for ${DFT_DBNAME} | grep -i hadr ;
+    
+    
+    
+    echo && PrintTitle "db2pd status"
+    db2pdx -hadr  ;
+}
+
+function HadrStop(){
+    db2 stop hadr on database ${DFT_DBNAME} ;
+}
 
 #############################################################################
 #set current 
@@ -305,9 +505,10 @@ function SetSchema(){
 
 #############################################################################
 #tools
-alias db2explnx="db2expln -database ${DFT_DBNAME} -g -i -t "
+alias db2explnx="db2expln -database ${DFT_DBNAME} -g -i -t " ;
 function DB2ExplnS(){
-    ARGS=`getopt -o s:q: --long schema:,statement: -n '$0' -- "$@"`
+    > ${CACHE_FILE_TMP};
+    ARGS=`getopt -o s:q: --long schema:,statement: -n '$0' -- "$@"`;
     [ $? != 0 ] && return ;
     eval set -- "${ARGS}" ;
     schema="";
@@ -334,15 +535,20 @@ function DB2ExplnS(){
         esac;
     done;
     [[ ${schema} != "" ]] && echo "set schema ${schema}" > ${CACHE_FILE_TMP} ; 
-    echo ${statement} >> ${CACHE_FILE_TMP}
-    #db2expln -database ${DFT_DBNAME} -g -i -stmtfile ${CACHE_FILE_TMP} -t;
-    db2explnx -stmtfile ${CACHE_FILE_TMP}
+    echo ${statement} >> ${CACHE_FILE_TMP};
+    db2explnx -stmtfile ${CACHE_FILE_TMP};
     [[ -f ${CACHE_FILE_TMP} ]] && rm -f ${CACHE_FILE_TMP} ;
 }
 alias myexplnq="DB2ExplnS";
 
-function DB2ExplnP(){
-    ARGS=`getopt -o s:p:n: --long schema:,package:,section: -n '$0' -- "$@"`
+function DB2ExfmtS(){
+    db2 explain plan with snapshot for "$1" && db2exfmt -d ${DFT_DBNAME}  -1 -t  ;
+}
+alias myexpfmtq="DB2ExfmtS";
+
+
+function DB2ExplnR(){
+    ARGS=`getopt -o s:p:n:r: --long schema:,package:,section:,routine: -n '$0' -- "$@"`;
     [ $? != 0 ] && return ;
     eval set -- "${ARGS}" ;
     while true
@@ -350,17 +556,18 @@ function DB2ExplnP(){
         case "$1" in
             -s|--schema)
                 schema=$2;
-                echo "schema:"$schema;
                 shift ;
                 ;;
             -p|--package)
                 package=$2;
-                echo "package:"$package;
+                shift ;
+                ;;
+            -r|--routine)
+                routine=$2;
                 shift ;
                 ;;
             -n|--section)
                 section=$2;
-                echo "package:"$section;
                 shift ;
                 ;;
             --)
@@ -372,19 +579,35 @@ function DB2ExplnP(){
                 ;;
         esac;
     done;
-    #[[ ${schema} != "" ]] && echo "set schema ${schema}" > ${CACHE_FILE_TMP} ; 
-    #echo ${statement} >> ${CACHE_FILE_TMP}
-    #db2expln -database ${DFT_DBNAME} -g -i -stmtfile ${CACHE_FILE_TMP} -t;
-    #[[ -f ${CACHE_FILE_TMP} ]] && rm -f ${CACHE_FILE_TMP} ;
-    db2explnx -p ${package} -schema ${schema} -section ${section}
+    
+    if [[ ${routine} != "" ]] ; then
+        listpkgandroute > ${CACHE_FILE_TMP} ;  
+        grep "SQL1024N" ${CACHE_FILE_TMP} && return ;
+        package=`grep -i ${routine} ${CACHE_FILE_TMP} |awk '{print $2}'|tail -1` ; # > ${CACHE_FILE_TMP}  ;
+        schema=`grep -i ${routine} ${CACHE_FILE_TMP} |awk '{print $1}'|tail -1` ;
+        [[ -f ${CACHE_FILE_TMP} ]] && rm -f ${CACHE_FILE_TMP};
+        echo "routine:"$routine;
+        echo "package:"$package;
+    fi;
+    if [[ ${schema} == "" ]] ; then
+        db2 values current schema |head -n 4|tail -1 > ${CACHE_FILE_TMP} ;
+        schema=`cat ${CACHE_FILE_TMP}`;
+    fi;
+    if [[ ${section} != "" ]] ; then
+        db2explnx -package ${package} -c ${schema} -section ${section}  ; 
+        echo "db2explnx -package ${package} -c ${schema} -section ${section}  ";
+    else
+        db2explnx -package ${package} -c ${schema} ;
+        echo "db2explnx -package ${package} -c ${schema} ";
+    fi;
+    
 }
-alias myexplnp="DB2ExplnP";
+alias myexplnp="DB2ExplnR";
 
 #############################################################################
 
 function CreateDB2Instance(){
     [[ `whoami` != 'root' ]] && echo 'only root user!' && return ;
-    echo
 }
 
 function DB2SetStandard() {
@@ -410,19 +633,19 @@ function DB2SetStandard() {
     SysConfirm "Are you sure to apply the following standard configuration to the current instance(Y/N)?";
     [[ $? == "1" ]] && return ;
     
-    db2set DB2COUNTRY=86
-    db2set DB2TERRITORY=86
-    db2set DB2CODEPAGE=1208
-    db2set DB2_LOAD_COPY_NO_OVERRIDE=NONRECOVERABLE
-    db2set DB2COMM=TCPIP
-    db2set DB2_LOGGER_NON_BUFFERED_IO=ON
-    db2set DB2_MDC_ROLLOUT=DEFER
-    db2set DB2_TRUST_MDC_BLOCK_FULL_HINT=YES
-    db2set DB2SORCVBUF=1048576
-    db2set DB2SOSNDBUF=1048576
-    db2set DB2_MAX_GLOBAL_SNAPSHOT_SIZE=20971520
-    db2set DB2RSHCMD=SSH
-    db2set DB2_RESTRICT_DDF=TRUE
+    db2set DB2COUNTRY=86                           ;
+    db2set DB2TERRITORY=86                         ;
+    db2set DB2CODEPAGE=1208                        ;
+    db2set DB2_LOAD_COPY_NO_OVERRIDE=NONRECOVERABLE;
+    db2set DB2COMM=TCPIP                           ;
+    db2set DB2_LOGGER_NON_BUFFERED_IO=ON           ;
+    db2set DB2_MDC_ROLLOUT=DEFER                   ;
+    db2set DB2_TRUST_MDC_BLOCK_FULL_HINT=YES       ;
+    db2set DB2SORCVBUF=1048576                     ;
+    db2set DB2SOSNDBUF=1048576                     ;
+    db2set DB2_MAX_GLOBAL_SNAPSHOT_SIZE=20971520   ;
+    db2set DB2RSHCMD=SSH                           ;
+    db2set DB2_RESTRICT_DDF=TRUE                   ;
     
     db2set -all;
     echo "Done!";
